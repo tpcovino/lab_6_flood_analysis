@@ -1,0 +1,287 @@
+---
+title: "Yellowstone flood analysis"
+author: "YOUR NAME HERE"
+date: "2023-01-09"
+output: html_document
+---
+
+# Lab 5 - part 1 (10 pts)
+
+Project repo <https://github.com/tpcovino/lab_6_flood_analysis>
+
+In this lab we will calculate the exceedence probabilties for high flows at the Corwin Springs gage on the Yellowstone. We will calculate the exceedence probabilities using the Gringorten plotting position and we will fit a Gumbel distribution to the data. The Gumbel is an extreme value distribution, so we will essentially fit a model to the data to calculate the probability of any flow or, conversely, the flow at any given probability. The lab will follow this CUAHSI module <https://serc.carleton.edu/hydromodules/steps/166250.html>
+
+Background on the flood here <https://www.usgs.gov/observatories/yvo/news/how-2022-yellowstone-flood-affected-a-monitoring-site-gardner-river#:~:text=The%20flooding%20of%20June%2013,and%20warning%20of%20flood%20events.>
+
+Corwin Springs gage here <https://waterdata.usgs.gov/monitoring-location/06191500/#parameterCode=00065&period=P7D>
+
+The deliverable for this lab is to complete a flood frequency analysis and determine the probability of the June 2022 flood. Then you will read a USGS flyer about floods and provide your expert opinion to your bosses at USGS and the National Flood Insurance Program.
+
+Please put your name as the author in the top section of this .Rmd.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(dataRetrieval)
+library(tidyverse) 
+
+```
+
+Let's set some gage sites. These are two gages on the Yellowstone. We will work with Corwin, but let's also add the Carter's bridge gage for demonstration purposes.
+
+```{r}
+# set a few gage sites. Livingston and Corwin gages. 
+lstone <- "06192500"
+corwin <- "06191500"
+
+service <- "dv"
+params <- c("00010", "00060")
+sites <- c(corwin) 
+stat_cd <- "00003"
+start <- "1910-10-01"
+end <- "2022-10-01"
+
+```
+
+See what's available at Corwin.
+
+```{r}
+data_available <- whatNWISdata(siteNumber = sites, service = service, statCd = stat_cd) %>% 
+  select(site_no, station_nm, dec_lat_va, dec_long_va, alt_va, parm_cd, stat_cd, begin_date, end_date, count_nu)
+
+data_available <- left_join(data_available, parameterCdFile, by = c("parm_cd" = "parameter_cd"))
+
+```
+
+Now let's download the Corwin data.
+
+```{r}
+
+
+gage_download <- function(...){
+  flow <- readNWISdata(...)%>% 
+  renameNWISColumns() %>% 
+  addWaterYear()
+  
+  data_available <- whatNWISdata(siteNumber = sites, service = service, statCd = stat_cd) %>% 
+  select(site_no, station_nm, dec_lat_va, dec_long_va, alt_va, parm_cd, stat_cd, begin_date, end_date, count_nu)
+
+  data_available <- left_join(data_available, parameterCdFile, by = c("parm_cd" = "parameter_cd"))
+  
+  station_nm <- data_available %>% 
+  filter(parm_cd == "00060") %>% 
+  select(site_no, station_nm)
+  
+  flow <- left_join(flow, station_nm, by = "site_no")
+  
+  flow <- flow %>% 
+  select(site_no, station_nm, date = dateTime, wy = waterYear, w_temp = Wtemp, q_cfs = Flow, status = Flow_cd)
+}
+
+
+q <- gage_download(sites = sites, 
+                   service = "dv", 
+                   parameterCd = params, 
+                   statCd = stat_cd, 
+                   startDate = start, 
+                   endDate = end)
+
+
+```
+
+Now that we have the data. As always the first thing to do is plot the Q and Temp to see how it looks.
+
+```{r}
+q %>% 
+  ggplot(aes(x = date, q_cfs)) +
+  geom_point()
+
+q %>% 
+  ggplot(aes(x = date, w_temp)) +
+  geom_point()
+
+```
+
+Looks like the temp isn't continuous so we don't really need to worry about that. Let's focus on the Q and in particular the high flows.
+
+Make a new df (max_q) that only includes the annual maximum value.
+
+```{r}
+max_q <- q %>% 
+  group_by(wy) %>% 
+  slice_max(q_cfs, with_ties = FALSE) %>% 
+  ungroup() %>% 
+  filter(wy < 2023)
+
+  
+```
+
+Again - let's plot. See what we are working with.
+
+```{r}
+max_q %>% 
+  ggplot(aes(x = date, y = q_cfs, color = status)) +
+  geom_point() +
+  geom_line(linetype = "dashed")
+
+```
+
+Now lets start with the flood frequency analysis. First rank the data using rank(). We want the biggest flow to be rank #1, so we use rank(-q_cfs).
+
+```{r}
+
+max_q <- max_q %>% 
+  mutate(q_rank = rank(-q_cfs)) %>% 
+  select(date, wy, q_cfs, q_rank, status)
+
+```
+
+Next we apply the Gringorten plotting position. The Gringorten plotting position equation is:
+
+qi = i -a/(N + 1 - 2a),
+
+where qi is the exceedence probability (ex_prob), N is the \# of observations, and a is a constant (0.44).
+
+Here we will calculate three things. The exceedence probabilty (ex_prob), the non-exceedence probability (non_ex_prob), and the estimated return interval (ri_grin) using the Gringornten plotting position.
+
+```{r}
+N <- length(max_q$q_cfs)
+a <- 0.44
+
+max_q <- max_q %>% 
+  mutate(ex_prob = (q_rank - a)/(N + 1 -2*a)) %>% 
+  mutate(non_ex_prob = 1 - ex_prob) %>% 
+  mutate(ri_gring = 1/ex_prob)
+  
+  
+```
+
+Now we can plot the exceedence probability and the return intervals for all of the flows.
+
+```{r}
+
+max_q %>% 
+  ggplot(aes(x = ex_prob * 100, y = q_cfs)) +
+  geom_line(linetype = "dashed") +
+  geom_point() +
+  scale_y_log10() +
+  scale_x_reverse() +
+  labs(x = "Annual exceedence probability (%)", y = "Q (cfs)")
+
+max_q %>% 
+  ggplot(aes(x = ri_gring, y = q_cfs)) +
+  geom_line(linetype = "dashed") +
+  geom_point()
+
+
+```
+
+Ok. So now we need to fit a Gumbel distribution (model) to the data.
+
+First, you need these parameters for the model. Xbar is the mean of the annual max flows. sx is the standard deviation of the flow data. Note that in the CUAHSI example they show you sx2, which is the variance. The standard deviation is the square root of the variance, and this is what we need. u and alpha are calculated parameters. The standard deviation is used in the calculation of alpha, and xbar (the mean) and alpha are used in the calculation of u.
+
+```{r}
+xbar <- mean(max_q$q_cfs)
+sx <- sd(max_q$q_cfs)
+alpha <- (sqrt(6)*sx) / pi
+u <- xbar - (0.5772 * alpha)
+
+```
+
+Now that we have the parameters, we can fit the Gumbel distribution to our observed data. This will create a model and we will call the nox-exceedence probability values we obtain from that model non_ex_gumb. non_ex_gumb is the modeled non-exceedence probability for any flow. From the non_ex_gumb we will then use the return interval equation to calculate the Gumbel return interval (ri_gumb). So non_ex_gumb is the modeled probability of a given flow and ri_gumb is the modeled return interval. Having a model allows us to calculate what the 500-year flood would be, even though we only have \~100 years of data.
+
+```{r}
+
+max_q <- max_q %>% 
+mutate(non_ex_gumb = 
+    exp(-exp(-((q_cfs - u) / alpha)))) %>%
+    mutate(ri_gumb = (1 / (1 - non_ex_gumb)))
+
+
+
+```
+
+Now we have the frequency analysis done. Let's check how well the Gumbel modeled exceedence estimates compare to the Gringornten exceedence probabilities calculated directly from the data. To do that plot the return intervals (ri_gring and ri_gumb) on the x and the discharge on the y. Plot ri_gring as points and ri_gumb as a line.
+
+```{r}
+
+max_q %>% 
+  ggplot(aes(y = q_cfs)) +
+  geom_line(aes(x = ri_gumb), color = "Blue") +
+  geom_point(aes(x = ri_gring), color = "Red") +
+  labs(title = " Gringerton (red) and Gumbel (blue) estimates of flood return intervals", x = "Return interval (years)", y = "Flow (cfs)")
+
+
+
+
+```
+
+In the plot above we see that the Gumbel distribution fits the Gringornten plotting position pretty well at most of the flows. They don't do that well at the flow we had last year (2022 flood). BUT - the exceedence probabilities and the return intervals estimated from the Gringornten plotting position are limited by the length of the data!
+
+In addition to that issue, we would probably rerun this analysis with other extreme value distributions like Pearson type III and log-normal to see if one of those gave a better fit to the data.
+
+That said, here we will use the Gumbel model to calculate the non-exceedence probability and return interval of a given flood magnitude.
+
+```{r}
+flood <- 43300
+
+corwin_non_ex_prob <- 
+    exp(-exp(-((flood - u) / alpha))) #This is the Gumbel equation. Because we have determined the values of u and alpha by fitting the Gumbel distribution to our data, we can use this equation to find the non-exceedence probability of any size flood by changing the flood input above. 
+
+corwin_ri <- 1/(1 - corwin_non_ex_prob)
+
+corwin_ri
+```
+
+Here we can rearrange the Gumbel distribution equation to solve for x, which in our case is q_cfs. The q_500 equation below is the Gumbel distirbution rearranged to solve for x. If you wish to see how to do this mathematically see here [https://stats.libretexts.org/Bookshelves/Probability_Theory/Probability_Mathematical_Statistics_and_Stochastic_Processes\_(Siegrist)/05%3A_Special_Distributions/5.30%3A_The_Extreme_Value_Distribution](https://stats.libretexts.org/Bookshelves/Probability_Theory/Probability_Mathematical_Statistics_and_Stochastic_Processes_(Siegrist)/05%3A_Special_Distributions/5.30%3A_The_Extreme_Value_Distribution){.uri}
+
+Here let's calculate what the flow of a 500 year flood (q_500) would be.
+
+```{r}
+# Here set the return period. 
+tp_500 <- 500
+
+p_500 <- 1 - (1/tp_500)
+
+q_500 <- u - (alpha * log(-log(p_500)))
+
+q_500
+```
+
+Questions:
+
+1.  What was the return interval of the 2022 flood at the Corwin gage as estimated using the Gumbel model (rp_gumb)? What is the % chance/probability of having a flood of this magnitude? (2 pts)
+
+2.  Use the two code chunks above to answer the following questions. (3 pts)
+
+-   What is the estimated Q of a 500 year flood?
+
+-   In 1918 there was a 32,000 cfs flood. What is the estimated return interval for a 32,000 cfs flood?
+
+-   The USGS estimated the June 13, 2022 flood at Corwin to be 49,400. What is the return period for a flow of 49,400 cfs?
+
+3.  Flood frequency analysis relies on historic data and the notion that these data are stationary (i.e., there is no trend and the past is good guide for the present and future). However, this assumption has been called into question by both the USGS and the National Flood Insurance Program. As part of your job at the USGS you have been asked to consult to the National Flood Insurance Program and provide your insight on the level of uncertainty associated with the 1% annual exceedence probability (aka the 100 year flood). In the context of this bulletin <https://pubs.usgs.gov/gip/106/pdf/100-year-flood-handout-042610.pdf> and the figure I have given code for below communicate your confidence in the estimate of the 1% probability flood flow magnitude. (5 pts)
+
+```{r}
+max_q %>% 
+  ggplot(aes(x = ex_prob *100, y = q_cfs)) +
+  geom_point() +
+  geom_smooth(method=lm , level = 0.95, color="red", fill="#69b3a2", se=TRUE) +
+  scale_y_log10() +
+  scale_x_reverse() +
+  xlim(c(5, 0)) +
+  labs(x = "Annual exceedence probability (%)", y = "Q (cfs)")
+  
+```
+
+**Final note** the USGS reported here <https://www.usgs.gov/observatories/yvo/news/how-2022-yellowstone-flood-affected-a-monitoring-site-gardner-river#:~:text=Similarly%2C%20the%20peak%20flow%20during,during%20snowmelt%20is%2012%2C000%20CFS.> that the flow on 6/13/2022 was 49,400 cfs and estimated this was a 500-year flood. But the data available in the National Water Information System (NWIS) has a value of 43,300 cfs. To redo the analysis with the 49,400 we would do:
+
+```{r}
+higher_q <- max_q %>% 
+  mutate(higher_q = ifelse(row_number() == 112, 49400, q_cfs))
+
+```
+
+This will substitute the 49,400 value into the last position (2022) and we would then run the analyis with that data.
