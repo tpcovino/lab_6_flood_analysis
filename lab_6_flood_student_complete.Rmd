@@ -266,7 +266,8 @@ Questions:
 
 ```{r}
 max_q %>% 
-  ggplot(aes(x = ex_prob *100, y = q_cfs)) +
+  mutate(ex_gumb = 1 - non_ex_gumb) %>% 
+  ggplot(aes(x = ex_gumb *100, y = q_cfs)) +
   geom_point() +
   geom_smooth(method=lm , level = 0.95, color="red", fill="#69b3a2", se=TRUE) +
   scale_y_log10() +
@@ -284,4 +285,4 @@ higher_q <- max_q %>%
 
 ```
 
-This will substitute the 49,400 value into the last position (2022) and we would then run the analyis with that data.
+This will substitute the 49,400 value into the last position (2022) and we would then run the analysis with that data.
